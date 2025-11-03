@@ -293,43 +293,14 @@ Model* model_clone(const Model& original_model, int64_t external_data_threshold)
       }
     }
   }
-  auto ptr_to_string = [](const void* g) -> std::string {
-    return std::to_string((uintptr_t)(g));
-  };
-  auto graph_ptr = ptr_to_string(&original_graph);
-  for (auto& it : original_graph.GetAllInitializedTensors()) {
-    auto cloned_tensor = graph_proto->add_initializer();
-    auto original_tensor = it.second;
-    cloned_tensor->set_name(original_tensor->name());
-    cloned_tensor->set_data_type(original_tensor->data_type());
-    auto& dims = original_tensor->dims();
-    int64_t size = 1;
-    for (auto i = 0; i < dims.size(); ++i) {
-      auto dim = dims[i];
-      cloned_tensor->add_dims(dim);
-      size = size * dim;
-    }
-    auto ORT_MEM_ADDR_tag = process_ext_address(*original_tensor);
-    if (!ORT_MEM_ADDR_tag.empty()) {
-      cloned_tensor->set_data_location(ONNX_NAMESPACE::TensorProto_DataLocation_EXTERNAL);
-      auto external_data = cloned_tensor->mutable_external_data();
-      auto p = external_data->Add();
-      *p->mutable_key() = "location";
-      *p->mutable_value() = std::string("<") + graph_ptr;
-    } else if (size >= external_data_threshold) {
-      cloned_tensor->set_data_location(ONNX_NAMESPACE::TensorProto_DataLocation_EXTERNAL);
-      auto external_data = cloned_tensor->mutable_external_data();
-      auto p = external_data->Add();
-      *p->mutable_key() = "location";
-      *p->mutable_value() = std::string("<") + graph_ptr;
-    } else {
-      *cloned_tensor = *original_tensor;
-    }
-  }
+
   auto ret = Model::Create(std::move(*model_proto), file_path, &local_registries, logger);
   auto& graph = ret->MainGraph();
   for (auto node : graph.Nodes()) {
     graph.SetOpSchemaFromRegistryForNode(*graph.GetNode(node->Index()));
+  }
+  for (auto& it : original_graph.GetAllInitializedTensors()) {
+    graph_utils::MakeInitializerCopyIfNotExist(original_graph, graph, it.first);
   }
   auto status = graph.Resolve();
   vai_assert(status.IsOK(), status.ErrorMessage());
