@@ -172,8 +172,31 @@ void graph_remove_node(Graph& graph, const NodeInput& node_input) {
   }
 }
 
+static void graph_set_function_body_subgraphs(Graph& graph) {
+  const NodeIndex max_node_index = static_cast<NodeIndex>(graph.MaxNodeIndex());
+  for (NodeIndex i = 0; i < max_node_index; ++i) {
+    Node* node = graph.GetNode(i);
+    if (node && node->NodeType() == Node::Type::Fused) {
+      const Function* func_body = node->GetFunctionBody();
+      if (func_body) {
+        const Graph& subgraph = func_body->Body();
+        std::unique_ptr<ONNX_NAMESPACE::GraphProto> subgraph_proto = subgraph.ToGraphProto();
+        subgraph_proto->set_name("body");
+        node->AddAttribute("body", *subgraph_proto);
+      }
+    }
+  }
+
+  auto status = graph.Resolve();
+  vai_assert(status.IsOK(), "graph resolve error:" + status.ErrorMessage());
+}
+
 void graph_save(const Graph& graph, const std::string& filename, const std::string& filename_dat, size_t initializer_size_threshold) {
-  auto model_proto = const_cast<onnxruntime::Model&>(graph.GetModel()).ToProto();
+  auto& mutable_model = const_cast<onnxruntime::Model&>(graph.GetModel());
+  auto& mutable_graph = mutable_model.MainGraph();
+  graph_set_function_body_subgraphs(mutable_graph);
+
+  auto model_proto = mutable_model.ToProto();
   auto graph_proto_subgraph = graph.ToGraphProto();
   *model_proto->mutable_graph() = *graph_proto_subgraph;
   auto& logger = logging::LoggingManager::DefaultLogger();
@@ -248,12 +271,6 @@ Node& graph_fuse(Graph& graph, const std::string& name,
   indexed_subgraph->SetMetaDef(std::move(meta_def));
 
   auto& fused_node = graph.FuseSubGraph(*indexed_subgraph, name);
-  auto function_body = fused_node.GetFunctionBody();
-  if (function_body) {
-    auto proto = function_body->Body().ToGraphProto();
-    *proto->mutable_name() = name;
-    fused_node.AddAttribute("body", *proto);
-  }
   for (auto&& o : fused_node.OutputDefs()) {
     graph.UpdateProducerNode(o->Name(), fused_node.Index());
   }
