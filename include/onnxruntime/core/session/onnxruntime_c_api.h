@@ -6590,6 +6590,55 @@ struct OrtApi {
    * \since Version 1.24
    */
   ORT_API_T(bool, TensorTypeAndShape_HasShape, _In_ const OrtTensorTypeAndShapeInfo* info);
+
+  /** \brief Check if a config entry exists in ::OrtKernelInfo.
+   *
+   * Checks if a configuration key exists in the ::OrtKernelInfo object.
+   *
+   * Used in the CreateKernel callback of an OrtCustomOp to check for session configuration
+   * entries during kernel construction.
+   *
+   * \param[in] info An instance of ::OrtKernelInfo.
+   * \param[in] config_key A null-terminated UTF-8 string representation of the configuration key.
+   * \param[out] out Pointer set to 1 if the entry exists and 0 otherwise.
+   *
+   * \snippet{doc} snippets.dox OrtStatus Return Value
+   * \since Version 1.24
+   */
+  ORT_API2_STATUS(KernelInfoHasConfigEntry, _In_ const OrtKernelInfo* info, _In_z_ const char* config_key,
+                  _Out_ int* out);
+
+  /** \brief Get a config value from ::OrtKernelInfo.
+   *
+   * Gets a configuration value by key from the ::OrtKernelInfo object.
+   * Config entries are set on the ::OrtSessionOptions and are accessible in custom operator kernels.
+   *
+   * Returns a failure status if the configuration key does not exist.
+   *
+   * If `config_value` is nullptr, the value of `size` is set to the true size of the string
+   * value (including null-terminator), and a success status is returned.
+   *
+   * If the `size` parameter is greater than or equal to the actual string value's size,
+   * the value of `size` is set to the true size of the string value, the provided memory
+   * is filled with the value's contents, and a success status is returned.
+   *
+   * If the `size` parameter is less than the actual string value's size and `config_value`
+   * is not nullptr, the value of `size` is set to the true size of the string value
+   * and a failure status is returned.
+   *
+   * Used in the CreateKernel callback of an OrtCustomOp to access session configuration during
+   * kernel construction.
+   *
+   * \param[in] info An instance of ::OrtKernelInfo.
+   * \param[in] config_key A null-terminated UTF-8 string representation of the config key.
+   * \param[out] config_value Pointer to memory where the null-terminated UTF-8 string value will be stored.
+   * \param[in,out] size Pointer to the size of the `config_value` buffer. See above comments for details.
+   *
+   * \snippet{doc} snippets.dox OrtStatus Return Value
+   * \since Version 1.24
+   */
+  ORT_API2_STATUS(KernelInfoGetConfigEntry, _In_ const OrtKernelInfo* info, _In_z_ const char* config_key,
+                  _Out_ char* config_value, _Inout_ size_t* size);
 };
 
 /*

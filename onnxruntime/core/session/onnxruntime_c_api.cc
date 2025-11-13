@@ -4231,6 +4231,8 @@ static constexpr OrtApi ort_api_1_to_24 = {
     // End of Version 23 - DO NOT MODIFY ABOVE (see above text for more information)
 
     &OrtApis::TensorTypeAndShape_HasShape,
+    &OrtApis::KernelInfoHasConfigEntry,
+    &OrtApis::KernelInfoGetConfigEntry,
 };
 
 // OrtApiBase can never change as there is no way to know what version of OrtApiBase is returned by OrtGetApiBase.

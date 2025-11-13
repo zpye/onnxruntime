@@ -2822,6 +2822,28 @@ inline Logger KernelInfoImpl<T>::GetLogger() const {
   return Logger{out};
 }
 
+template <typename T>
+inline bool KernelInfoImpl<T>::HasConfigEntry(const char* config_key) const {
+  int out = 0;
+  Ort::ThrowOnError(GetApi().KernelInfoHasConfigEntry(this->p_, config_key, &out));
+  return static_cast<bool>(out);
+}
+
+template <typename T>
+inline std::string KernelInfoImpl<T>::GetConfigEntry(const char* config_key) const {
+  size_t size = 0;
+
+  // Feed nullptr for the data buffer to query the true size of the string value
+  Ort::ThrowOnError(GetApi().KernelInfoGetConfigEntry(this->p_, config_key, nullptr, &size));
+
+  std::string out;
+  out.resize(size);
+  Ort::ThrowOnError(GetApi().KernelInfoGetConfigEntry(this->p_, config_key, &out[0], &size));
+  out.resize(size - 1);  // remove the terminating character '\0'
+
+  return out;
+}
+
 inline void attr_utils::GetAttr(const OrtKernelInfo* p, const char* name, float& out) {
   Ort::ThrowOnError(GetApi().KernelInfoGetAttribute_float(p, name, &out));
 }

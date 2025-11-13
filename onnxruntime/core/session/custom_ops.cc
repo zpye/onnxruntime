@@ -743,6 +743,38 @@ ORT_API_STATUS_IMPL(OrtApis::KernelInfo_GetLogger, _In_ const OrtKernelInfo* inf
   });
 }
 
+ORT_API_STATUS_IMPL(OrtApis::KernelInfoHasConfigEntry, _In_ const OrtKernelInfo* info, _In_z_ const char* config_key,
+                    _Out_ int* out) {
+  return ExecuteIfCustomOpsApiEnabled([&]() -> OrtStatusPtr {
+    const auto* op_info = reinterpret_cast<const onnxruntime::OpKernelInfo*>(info);
+    const auto& config_options = op_info->GetConfigOptions();
+
+    std::string value;
+    *out = static_cast<int>(config_options.TryGetConfigEntry(config_key, value));
+    return nullptr;
+  });
+}
+
+ORT_API_STATUS_IMPL(OrtApis::KernelInfoGetConfigEntry, _In_ const OrtKernelInfo* info, _In_z_ const char* config_key,
+                    _Out_ char* config_value, _Inout_ size_t* size) {
+  return ExecuteIfCustomOpsApiEnabled([&]() -> OrtStatusPtr {
+    const auto* op_info = reinterpret_cast<const onnxruntime::OpKernelInfo*>(info);
+    const auto& config_options = op_info->GetConfigOptions();
+
+    std::string value;
+    if (!config_options.TryGetConfigEntry(config_key, value)) {
+      return OrtApis::CreateStatus(ORT_INVALID_ARGUMENT,
+                                   "Configuration key not found in ::OrtKernelInfo");
+    }
+
+    auto status = CopyStringToOutputArg(value,
+                                        "Output buffer is not large enough for config value",
+                                        config_value, size);
+
+    return onnxruntime::ToOrtStatus(status);
+  });
+}
+
 ORT_API_STATUS_IMPL(OrtApis::KernelInfoGetAllocator, _In_ const OrtKernelInfo* info, _In_ OrtMemType mem_type, _Outptr_ OrtAllocator** out) {
   return ExecuteIfCustomOpsApiEnabled([&]() -> OrtStatusPtr {
     onnxruntime::AllocatorPtr allocator = reinterpret_cast<const onnxruntime::OpKernelInfo*>(info)->GetAllocator(mem_type);
