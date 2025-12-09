@@ -172,16 +172,46 @@ void graph_remove_node(Graph& graph, const NodeInput& node_input) {
   }
 }
 
+static std::unique_ptr<Model> clone_model_with_external_data_in_memory(const Graph& original_graph) {
+  std::unique_ptr<GraphViewer> graph_viewer = original_graph.CreateGraphViewer();
+
+  const Model& original_model = original_graph.GetModel();
+  std::unique_ptr<Model> ret = graph_viewer->CreateModel(
+      logging::LoggingManager::DefaultLogger(), original_model.MetaData());
+
+  Graph& graph = ret->MainGraph();
+
+  std::vector<const NodeArg*> graph_input_args;
+  for (const NodeArg* arg : graph_viewer->GetInputs()) {
+    NodeArg& input_arg = graph.GetOrCreateNodeArg(arg->Name(), arg->TypeAsProto());
+    graph_input_args.push_back(&input_arg);
+  }
+  graph.SetInputs(graph_input_args);
+
+  std::vector<const NodeArg*> graph_output_args;
+  for (const NodeArg* arg : graph_viewer->GetOutputs()) {
+    NodeArg& output_arg = graph.GetOrCreateNodeArg(arg->Name(), arg->TypeAsProto());
+    graph_output_args.push_back(&output_arg);
+  }
+  graph.SetOutputs(graph_output_args);
+
+  for (auto& it : graph_viewer->GetAllInitializedTensors()) {
+    graph_utils::MakeInitializerCopyIfNotExist(original_graph, graph, it.first, false);
+  }
+
+  for (const Node& node : graph_viewer->Nodes()) {
+    Node& new_node = graph.AddNode(node);
+    graph.SetOpSchemaFromRegistryForNode(new_node);
+  }
+
+  auto status = graph.Resolve();
+  vai_assert(status.IsOK(), " graph resolve error: " + status.ErrorMessage());
+  return ret;
+}
+
 void graph_save(const Graph& graph, const std::string& filename, const std::string& filename_dat, size_t initializer_size_threshold) {
-  auto model_proto = const_cast<onnxruntime::Model&>(graph.GetModel()).ToProto();
-  auto graph_proto_subgraph = graph.ToGraphProto();
-  *model_proto->mutable_graph() = *graph_proto_subgraph;
-  auto& logger = logging::LoggingManager::DefaultLogger();
-  // Reading initializer data from an external data file below will access the data file based on the directory of the model_path
-  // parameter. Thus, the path to the original model must be used here to make reading initializer data from an external file work.
-  auto model = Model::Create(std::move(*model_proto), graph.ModelPath(), nullptr, logger);
-  auto status = model->MainGraph().Resolve();
-  vai_assert(status.IsOK(), "graph resolve error:" + status.ErrorMessage());
+  std::unique_ptr<Model> model = clone_model_with_external_data_in_memory(graph);
+  std::unique_ptr<ONNX_NAMESPACE::ModelProto> model_proto;
   if (initializer_size_threshold == std::numeric_limits<size_t>::max()) {
     model_proto = model->ToProto();
   } else {
@@ -189,16 +219,7 @@ void graph_save(const Graph& graph, const std::string& filename, const std::stri
     model_proto = model->ToGraphProtoWithExternalInitializers(ToPathString(filename_dat), ToPathString(filename),
                                                               model_saving_options);
   }
-  auto& metadata = model->MetaData();
-  if (!metadata.empty()) {
-    auto metadata_props = model_proto->mutable_metadata_props();
-    metadata_props->Clear();
-    for (auto& m : metadata) {
-      auto prop = metadata_props->Add();
-      *prop->mutable_key() = m.first;
-      *prop->mutable_value() = m.second;
-    }
-  }
+
   std::fstream output(ToPathString(filename), std::ios::out | std::ios::trunc | std::ios::binary);
   bool result = model_proto->SerializeToOstream(output);
   output << std::flush;
@@ -206,22 +227,9 @@ void graph_save(const Graph& graph, const std::string& filename, const std::stri
 }
 
 vaip_core::DllSafe<std::string> graph_save_string(const Graph& graph) {
-  auto model_proto = const_cast<onnxruntime::Model&>(graph.GetModel()).ToProto();
-  auto graph_proto_subgraph = graph.ToGraphProto();
-  *model_proto->mutable_graph() = *graph_proto_subgraph;
-  auto& logger = logging::LoggingManager::DefaultLogger();
-  auto model = Model::Create(std::move(*model_proto), graph.ModelPath(), nullptr, logger);
-  model_proto = model->ToProto();
-  auto& metadata = model->MetaData();
-  if (!metadata.empty()) {
-    auto metadata_props = model_proto->mutable_metadata_props();
-    metadata_props->Clear();
-    for (auto& m : metadata) {
-      auto prop = metadata_props->Add();
-      *prop->mutable_key() = m.first;
-      *prop->mutable_value() = m.second;
-    }
-  }
+  std::unique_ptr<Model> model = clone_model_with_external_data_in_memory(graph);
+  std::unique_ptr<ONNX_NAMESPACE::ModelProto> model_proto = model->ToProto();
+
   std::string graph_string;
   bool result = model_proto->SerializeToString(graph_string);
   vai_assert(result, "model serialize to string error");
@@ -253,80 +261,10 @@ Node& graph_fuse(Graph& graph, const std::string& name,
   }
   return fused_node;
 }
-Model* model_clone(const Model& original_model, int64_t external_data_threshold) {
-  // create an empty mode
-  auto& original_graph = const_cast<Model&>(original_model).MainGraph();
-  auto& logger = logging::LoggingManager::DefaultLogger();
-  auto file_path = original_graph.ModelPath();
-  auto local_registries = IOnnxRuntimeOpSchemaRegistryList{original_graph.GetSchemaRegistry()};
-  auto model_proto = ONNX_NAMESPACE::ModelProto::Create();
-  auto graph_proto = model_proto->mutable_graph();  // create a graph
-  model_proto->set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
-  for (const auto& op : original_graph.DomainToVersionMap()) {
-    auto* opset_import = model_proto->add_opset_import();
-    *(opset_import->mutable_domain()) = op.first;
-    opset_import->set_version(op.second);
-  }
-  auto graph_input = graph_proto->mutable_input();
-  for (const auto& input : original_graph.GetInputs()) {
-    auto* input_proto = graph_input->Add();
-    *input_proto = input->ToProto();
-  }
-  auto graph_output = graph_proto->mutable_output();
-  for (const auto& output : original_graph.GetOutputs()) {
-    auto* output_proto = graph_output->Add();
-    *output_proto = output->ToProto();
-  }
-  for (auto& node : original_graph.Nodes()) {
-    auto* node_proto = graph_proto->add_node();
-    node->ToProto(*node_proto, true);
-    for (auto output : node->OutputDefs()) {
-      if (output->Exists()) {
-        auto* value_info = graph_proto->mutable_value_info()->Add();
-        *value_info = output->ToProto();
-      }
-    }
-  }
-  auto ptr_to_string = [](const void* g) -> std::string {
-    return std::to_string((uintptr_t)(g));
-  };
-  auto graph_ptr = ptr_to_string(&original_graph);
-  for (auto& it : original_graph.GetAllInitializedTensors()) {
-    auto cloned_tensor = graph_proto->add_initializer();
-    auto original_tensor = it.second;
-    cloned_tensor->set_name(original_tensor->name());
-    cloned_tensor->set_data_type(original_tensor->data_type());
-    auto& dims = original_tensor->dims();
-    int64_t size = 1;
-    for (auto i = 0; i < dims.size(); ++i) {
-      auto dim = dims[i];
-      cloned_tensor->add_dims(dim);
-      size = size * dim;
-    }
-    auto ORT_MEM_ADDR_tag = process_ext_address(*original_tensor);
-    if (!ORT_MEM_ADDR_tag.empty()) {
-      cloned_tensor->set_data_location(ONNX_NAMESPACE::TensorProto_DataLocation_EXTERNAL);
-      auto external_data = cloned_tensor->mutable_external_data();
-      auto p = external_data->Add();
-      *p->mutable_key() = "location";
-      *p->mutable_value() = std::string("<") + graph_ptr;
-    } else if (size >= external_data_threshold) {
-      cloned_tensor->set_data_location(ONNX_NAMESPACE::TensorProto_DataLocation_EXTERNAL);
-      auto external_data = cloned_tensor->mutable_external_data();
-      auto p = external_data->Add();
-      *p->mutable_key() = "location";
-      *p->mutable_value() = std::string("<") + graph_ptr;
-    } else {
-      *cloned_tensor = *original_tensor;
-    }
-  }
-  auto ret = Model::Create(std::move(*model_proto), file_path, &local_registries, logger);
-  auto& graph = ret->MainGraph();
-  for (auto node : graph.Nodes()) {
-    graph.SetOpSchemaFromRegistryForNode(*graph.GetNode(node->Index()));
-  }
-  auto status = graph.Resolve();
-  vai_assert(status.IsOK(), status.ErrorMessage());
+
+Model* model_clone(const Model& original_model, int64_t /*external_data_threshold*/) {
+  const Graph& original_graph = const_cast<Model&>(original_model).MainGraph();
+  std::unique_ptr<Model> ret = clone_model_with_external_data_in_memory(original_graph);
   return ret.release();
 }
 }  // namespace vaip
